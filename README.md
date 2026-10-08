@@ -1,13 +1,25 @@
 # ya-to-dbx-sync
 
-Uploads files from Yandex Disk to Dropbox, skipping files that are already newer on Dropbox. On first run it asks for
-OAuth tokens and caches them locally.
+Uploads files from Yandex Disk to Dropbox or Google Drive, skipping files that are already newer there. On first run
+it asks for OAuth tokens and caches them locally.
 
 ## Build
 
 ```sh
 go build
 ```
+
+## Google Drive Credentials
+
+The tool works out of the box with Yandex.Disk and Dropbox. Unfortunately, Google Drive requires the client to be
+verified in order to grant it permissions to your Drive.
+
+The easiest way to do this is to add a new client for yourselves by following instructions in
+https://developers.google.com/workspace/drive/api/quickstart/go. After you create your credentials,
+store them in the file gdrive-client.json and they will automatically be picked up by the tool (note that this you will
+still need to create the OAuth token, but it will be created for your newly created client).
+
+Do not forget to add yourselves to the list of test users!
 
 ## Usage
 
@@ -41,30 +53,21 @@ Upload only the files from the directories A and B to sub-folder:
 ./ya-to-dbx-sync -action to-dropbox -dirs A,B -to-path backup
 ```
 
+Upload all files to Google Drive (same flags as `to-dropbox`):
+
+```sh
+./ya-to-dbx-sync -action to-drive
+```
+
 Authorize Google Drive and store the OAuth token locally (in `gdrive.token` by default), doing nothing else:
 
 ```sh
-./ya-to-dbx-sync -action gdrive-auth -gdrive-client-id CLIENT_ID -gdrive-client-secret CLIENT_SECRET
+./ya-to-dbx-sync -action gdrive-auth
 ```
 
 ## Secrets
 
 The tokens for sync are stored locally in `*.token` files. Do not forget to remove them when they are no longer used.
-
-## Privacy policy
-
-* The tool runs on the user's own computer.
-* OAuth tokens are stored in a file on that computer, readable only by the user's account. They are never copied elsewhere.
-* User data is not stored, shared, sold, or sent to any third party.
-* The tool sends messages only when the user asks it to.
-* Remove the credentials and revoke access at any time at:
-  * https://myaccount.google.com/permissions
-  * https://id.yandex.ru/personal/data-access
-  * https://www.dropbox.com/account/connected_apps
-
-## Terms of service
-
-The tool is provided as is, for the author's own use, with no warranty.
 
 ## License
 

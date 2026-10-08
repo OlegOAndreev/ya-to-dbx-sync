@@ -6,12 +6,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"math/rand/v2"
 	"os"
+	"path"
 	"strings"
 	"time"
 
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
+	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/filetransfer"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/oauth"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/retry"
 	"golang.org/x/oauth2"
@@ -80,8 +84,7 @@ func dropboxAuthorize(ctx context.Context, appKey, tokenFile string) (*oauth2.To
 	return token, nil
 }
 
-func DropboxListModTimes(ctx context.Context, dbx files.ContextClient, dirs []string) (map[string]time.Time, error) {
-	modTimes := make(map[string]time.Time)
+func DropboxList(ctx context.Context, dbx files.ContextClient, dirs []string, fn func(File)) error {
 	for _, dir := range dirs {
 		arg := files.NewListFolderArg("/" + strings.Trim(dir, "/"))
 		arg.Recursive = true
@@ -90,24 +93,73 @@ func DropboxListModTimes(ctx context.Context, dbx files.ContextClient, dirs []st
 			if strings.Contains(err.Error(), "path/not_found") {
 				continue
 			}
-			return nil, err
+			return err
 		}
 
 		for {
 			for _, entry := range res.Entries {
 				if f, ok := entry.(*files.FileMetadata); ok {
-					modTimes[strings.ToLower(strings.TrimPrefix(f.PathLower, "/"))] = time.Time(f.ClientModified)
+					fn(File{
+						Path:    strings.TrimPrefix(f.PathLower, "/"),
+						Size:    int64(f.Size),
+						ModTime: time.Time(f.ClientModified),
+					})
 				}
 			}
 			if !res.HasMore {
 				break
 			}
 			if res, err = dbx.ListFolderContinueContext(ctx, files.NewListFolderContinueArg(res.Cursor)); err != nil {
-				return nil, err
+				return err
 			}
 		}
 	}
-	return modTimes, nil
+	return nil
+}
+
+func DropboxUploadFile(ctx context.Context, dbx files.ContextClient, open func() (io.ReadCloser, error), f File, toPath string) error {
+	up := filetransfer.NewUploader(dbx)
+	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		err := uploadOnce(ctx, up, open, f, toPath)
+		if err == nil {
+			return nil
+		} else if attempt >= maxAttempts {
+			return err
+		}
+		fmt.Printf("UPLOAD RETRY %d/%d %s: %v\n", attempt, maxAttempts, f.Path, err)
+		delay := time.Duration(1+rand.IntN(10)) * time.Second
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+}
+
+func uploadOnce(ctx context.Context, up *filetransfer.Uploader, open func() (io.ReadCloser, error), f File, toPath string) error {
+	body, err := open()
+	if err != nil {
+		return err
+	}
+	defer body.Close()
+
+	source, err := filetransfer.ReaderUpload(body)
+	if err != nil {
+		return err
+	}
+	arg := files.NewCommitInfo("/" + path.Join(toPath, f.Path))
+	arg.Mode = &files.WriteMode{Tagged: dropbox.Tagged{Tag: files.WriteModeOverwrite}}
+	clientModified := dropbox.DBXTime(f.ModTime) // keeps the disk's timestamp, so later runs can compare ages
+	arg.ClientModified = &clientModified
+
+	// The SDK retries retryable failures of the current chunk from its in-memory buffer, so a transient Dropbox error
+	// doesn't restart the download.
+	_, err = up.Upload(ctx, source, arg, filetransfer.UploadOptions{MaxAttempts: maxAttempts})
+	return err
 }
 
 func DropboxGetModTime(ctx context.Context, dbx files.ContextClient, path string) (time.Time, error) {

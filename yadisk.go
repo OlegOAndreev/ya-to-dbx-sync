@@ -252,37 +252,6 @@ func hasOneOfPrefixes(path string, prefixes []string) bool {
 	return false
 }
 
-func (c *YaDiskClient) ListDirs(ctx context.Context, dir string, maxDepth int, fn func(string)) error {
-	type item struct {
-		path  string
-		depth int
-	}
-	stack := []item{{strings.Trim(dir, "/"), 0}}
-	for len(stack) > 0 {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		d := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-
-		err := c.listDir(ctx, d.path, func(it yaItem) {
-			if it.Type != "dir" {
-				return
-			}
-			child := path.Join(d.path, it.Name)
-			fn(child)
-			if d.depth+1 < maxDepth { // deeper reads only serve deeper listings
-				stack = append(stack, item{child, d.depth + 1})
-			}
-		})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (c *YaDiskClient) listDir(ctx context.Context, dir string, fn func(yaItem)) error {
 	offset := 0
 	for {

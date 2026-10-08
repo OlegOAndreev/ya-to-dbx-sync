@@ -5,8 +5,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
-	"math/rand/v2"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -15,9 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
-	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/filetransfer"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -53,50 +51,6 @@ func readList(path string) ([]string, error) {
 	return lines, scanner.Err()
 }
 
-func uploadFile(ctx context.Context, c *YaDiskClient, up *filetransfer.Uploader, f File, toPath string) error {
-	for attempt := 1; ; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		err := uploadOnce(ctx, c, up, f, toPath)
-		if err == nil {
-			return nil
-		} else if attempt >= maxAttempts {
-			return err
-		}
-		fmt.Printf("UPLOAD RETRY %d/%d %s: %v\n", attempt, maxAttempts, f.Path, err)
-		delay := time.Duration(1+rand.IntN(10)) * time.Second
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
-		}
-	}
-}
-
-func uploadOnce(ctx context.Context, c *YaDiskClient, up *filetransfer.Uploader, f File, toPath string) error {
-	body, err := c.Download(ctx, f.Path)
-	if err != nil {
-		return err
-	}
-	defer body.Close()
-
-	source, err := filetransfer.ReaderUpload(body)
-	if err != nil {
-		return err
-	}
-	arg := files.NewCommitInfo("/" + path.Join(toPath, f.Path))
-	arg.Mode = &files.WriteMode{Tagged: dropbox.Tagged{Tag: files.WriteModeOverwrite}}
-	clientModified := dropbox.DBXTime(f.ModTime) // keeps the disk's timestamp, so later runs can compare ages
-	arg.ClientModified = &clientModified
-
-	// The SDK retries retryable failures of the current chunk from its in-memory
-	// buffer, so a transient Dropbox error doesn't restart the download.
-	_, err = up.Upload(ctx, source, arg, filetransfer.UploadOptions{MaxAttempts: maxAttempts})
-	return err
-}
-
 func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, dirs []string, toPath string, parallel int) error {
 	toPath = strings.Trim(toPath, "/")
 
@@ -113,11 +67,51 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, d
 	for i, d := range dirs {
 		dbxDirs[i] = path.Join(toPath, d)
 	}
-	dbxModTimes, err := DropboxListModTimes(ctx, dbx, dbxDirs)
-	if err != nil {
+	dbxModTimes := make(map[string]time.Time)
+	if err := DropboxList(ctx, dbx, dbxDirs, func(f File) {
+		dbxModTimes[strings.ToLower(f.Path)] = f.ModTime
+	}); err != nil {
 		return err
 	}
 
+	return syncFiles(ctx, fs, parallel, toPath, dbxModTimes, func(ctx context.Context, f File) error {
+		return DropboxUploadFile(ctx, dbx, func() (io.ReadCloser, error) {
+			return ya.Download(ctx, f.Path)
+		}, f, toPath)
+	})
+}
+
+func toDrive(ctx context.Context, ya *YaDiskClient, drv *GDriveClient, dirs []string, toPath string, parallel int) error {
+	toPath = strings.Trim(toPath, "/")
+
+	var fs []File
+	if err := ya.List(ctx, dirs, parallel, func(f File) {
+		fs = append(fs, f)
+	}); err != nil {
+		return err
+	}
+	log.Printf("Listed %d files on Yandex.Disk\n", len(fs))
+
+	// Check the same Drive folders the files are uploaded to, or the mod-time comparison below would never see them.
+	driveDirs := make([]string, len(dirs))
+	for i, d := range dirs {
+		driveDirs[i] = path.Join(toPath, d)
+	}
+	driveModTimes := make(map[string]time.Time)
+	if err := drv.List(ctx, driveDirs, func(f File) {
+		driveModTimes[strings.ToLower(f.Path)] = f.ModTime
+	}); err != nil {
+		return err
+	}
+
+	return syncFiles(ctx, fs, parallel, toPath, driveModTimes, func(ctx context.Context, f File) error {
+		return drv.UploadFile(ctx, func() (io.ReadCloser, error) {
+			return ya.Download(ctx, f.Path)
+		}, f, toPath)
+	})
+}
+
+func syncFiles(ctx context.Context, fs []File, parallel int, toPath string, dstModTimes map[string]time.Time, upload func(ctx context.Context, f File) error) error {
 	var toSync []File
 	var bytesToSync int64
 	var newer int
@@ -128,10 +122,12 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, d
 		}
 
 		seen[f.Path] = true
-		if modTime, ok := dbxModTimes[strings.ToLower(path.Join(toPath, f.Path))]; ok {
-			// Allow some slack if file times are rounded by dropbox when stored.
+		// dstModTimes are expected to have lowercased keys
+		dstPath := strings.ToLower(path.Join(toPath, f.Path))
+		if modTime, ok := dstModTimes[dstPath]; ok {
+			// Allow some slack if file times are rounded by the destination when stored.
 			if modTime.After(f.ModTime.Add(-time.Second)) {
-				fmt.Printf("SKIPPED %s (already on Dropbox)\n", f.Path)
+				fmt.Printf("SKIPPED %s (already in destination)\n", f.Path)
 				newer++
 				continue
 			}
@@ -139,12 +135,10 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, d
 		toSync = append(toSync, f)
 		bytesToSync += f.Size
 	}
-	fmt.Printf("Already %d on Dropbox, %d to upload\n", newer, len(toSync))
+	fmt.Printf("%d already in destination, %d to upload\n", newer, len(toSync))
 	if len(toSync) == 0 {
 		return nil // nothing to upload
 	}
-
-	up := filetransfer.NewUploader(dbx)
 
 	startTime := time.Now()
 	var totalSynced atomic.Int32
@@ -155,9 +149,10 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, d
 	for _, f := range toSync {
 		eg.Go(func() error {
 			startFileTime := time.Now()
-			err := uploadFile(egCtx, ya, up, f, toPath)
+			err := upload(egCtx, f)
 			if err != nil {
-				fmt.Printf("FAILED %s\n", f.Path)
+				fmt.Printf("FAILED %s: %v\n", f.Path, err)
+				totalErrors.Add(1)
 				return nil
 			}
 
@@ -184,9 +179,9 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, d
 	totalMb := float64(totalSize.Load()) / (1 << 20)
 	total := time.Since(startTime)
 	avgSpeed := totalMb / total.Seconds()
-	fmt.Printf("SUCCESS %d synced, %d already on Dropbox (%.2f Mb in %s, %.2f Mb/s average)\n", len(toSync), newer, totalMb, total.Round(time.Millisecond), avgSpeed)
-	if totalErrors.Load() > 0 {
-		fmt.Printf("ERRORS %d. Try syncing again!\n", totalErrors.Load())
+	fmt.Printf("SUCCESS %d synced, %d already on %s (%.2f Mb in %s, %.2f Mb/s average)\n", totalSynced.Load(), newer, dstName, totalMb, total.Round(time.Millisecond), avgSpeed)
+	if n := totalErrors.Load(); n > 0 {
+		fmt.Printf("ERRORS %d. Try syncing again!\n", n)
 	}
 	return nil
 }
@@ -196,18 +191,17 @@ func main() {
 		log.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
 
-	action := flag.String("action", "list-all", "what to do: \"list-all\" lists every file, \"list-top\" lists top-level directories, \"to-dropbox\" uploads the directories listed in -dirs to Dropbox, skipping files that are newer there, \"gdrive-auth\" only runs the Google Drive authorization flow and stores the token")
-	dir := flag.String("path", "", "[for list-all and list-top] subdirectory to list; default is the whole disk")
-	dirsStr := flag.String("dirs", "", "[for to-dropbox] comma-separate list of Yandex Disk directories to upload, relative to the disk root")
-	dirsFile := flag.String("dirs-file", "", "[for to-dropbox] file with the Yandex Disk directories to upload, one per line, relative to the disk root")
-	toPath := flag.String("to-path", "", "[for to-dropbox] Dropbox subfolder to upload into")
-	parallel := flag.Int("parallel", 10, "number of files to upload concurrently (used by to-dropbox)")
+	action := flag.String("action", "list-all", "what to do: \"list-all\" lists every file, \"to-dropbox\" and \"to-gdrive\" upload the directories listed in -dirs to Dropbox or Google Drive respectively, skipping files that are newer there, \"gdrive-auth\" only runs the Google Drive authorization flow and stores the token")
+	dirsStr := flag.String("dirs", "", "[for to-dropbox, to-drive and gdrive-list] comma-separated list of directories to process, relative to the remote root")
+	dirsFile := flag.String("dirs-file", "", "[for to-dropbox, to-drive and gdrive-list] file with the directories to process, one per line, relative to the remote root")
+	toPath := flag.String("to-path", "", "[for to-dropbox and to-drive] Dropbox/Google Drive subfolder to upload into")
+	parallel := flag.Int("parallel", 10, "number of files to upload concurrently (used by to-dropbox and to-drive)")
 	appKey := flag.String("dropbox-app-key", defaultDropboxAppKey, "Dropbox app key")
 	dbxTokenFile := flag.String("dropbox-token", "dropbox.token", "file caching the Dropbox OAuth token; a missing or empty file asks the user to authorize")
 	yaClientID := flag.String("ya-client-id", defaultYaClientId, "Yandex Disk app client ID")
 	yaTokenFile := flag.String("ya-oauth-token", "ya.token", "file caching the Yandex Disk OAuth token; a missing or empty file asks the user to authorize")
-	gdriveClientFile := flag.String("gdrive-client-file", "gdrive-client.json", "[for gdrive-auth] Google Drive OAuth client credentials file (the file that is saved from Auth Platform Clients page)")
-	gdriveTokenFile := flag.String("gdrive-token", "gdrive.token", "[for gdrive-auth] file to store the Google Drive OAuth token in")
+	gdriveClientFile := flag.String("gdrive-client-file", "gdrive-client.json", "[for gdrive-auth, gdrive-list and to-drive] Google Drive OAuth client credentials file (the file that is saved from Auth Platform Clients page)")
+	gdriveTokenFile := flag.String("gdrive-token", "gdrive.token", "[for gdrive-auth, gdrive-list and to-drive] file to store the Google Drive OAuth token in")
 	flag.Parse()
 
 	if *parallel == 0 {
@@ -244,22 +238,13 @@ func main() {
 
 		startTime := time.Now()
 		n := 0
-		if err := c.List(ctx, []string{*dir}, *parallel, func(f File) {
+		if err := c.List(ctx, dirs, *parallel, func(f File) {
 			fmt.Printf("%12d  %s  %s\n", f.Size, f.ModTime.Format(time.RFC3339), f.Path)
 			n++
 		}); err != nil {
 			log.Fatal(err)
 		}
 		fmt.Printf("%d files in %v\n", n, time.Since(startTime).Round(time.Second))
-	case "list-top":
-		c, err := NewYaDiskClient(*yaClientID, *yaTokenFile)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		if err := c.ListDirs(ctx, *dir, 1, func(p string) { fmt.Println(p) }); err != nil {
-			log.Fatal(err)
-		}
 	case "to-dropbox":
 		c, err := NewYaDiskClient(*yaClientID, *yaTokenFile)
 		if err != nil {
@@ -273,12 +258,40 @@ func main() {
 		if err := toDropbox(ctx, c, dbx, dirs, *toPath, *parallel); err != nil {
 			log.Fatal(err)
 		}
+	case "to-gdrive":
+		c, err := NewYaDiskClient(*yaClientID, *yaTokenFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		drv, err := NewGDriveClient(ctx, *gdriveClientFile, *gdriveTokenFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if err := toDrive(ctx, c, drv, dirs, *toPath, *parallel); err != nil {
+			log.Fatal(err)
+		}
 	case "gdrive-auth":
 		if err := GDriveAuthorize(ctx, *gdriveClientFile, *gdriveTokenFile); err != nil {
 			log.Fatal(err)
 		}
 		log.Printf("Token stored in %s, you can now copy it to destination machine\n", *gdriveTokenFile)
+	case "gdrive-list":
+		c, err := NewGDriveClient(ctx, *gdriveClientFile, *gdriveTokenFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		startTime := time.Now()
+		n := 0
+		if err := c.List(ctx, dirs, func(f File) {
+			fmt.Printf("%12d  %s  %s\n", f.Size, f.ModTime.Format(time.RFC3339), f.Path)
+			n++
+		}); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("%d files in %v\n", n, time.Since(startTime).Round(time.Second))
 	default:
-		log.Fatalf("unknown action %q, want list-all, list-top, to-dropbox or gdrive-auth", *action)
+		log.Fatalf("unknown action %q, want list-all, to-dropbox, to-gdrive, gdrive-auth", *action)
 	}
 }
