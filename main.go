@@ -60,7 +60,7 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, d
 	}); err != nil {
 		return err
 	}
-	log.Printf("Listed %d files on Yandex.Disk\n", len(fs))
+	fmt.Printf("Listed %d files on Yandex.Disk\n", len(fs))
 
 	// Check the same Dropbox subfolder the files are uploaded to, or the mod-time comparison below would never see them.
 	dbxDirs := make([]string, len(dirs))
@@ -90,7 +90,7 @@ func toDrive(ctx context.Context, ya *YaDiskClient, drv *GDriveClient, dirs []st
 	}); err != nil {
 		return err
 	}
-	log.Printf("Listed %d files on Yandex.Disk\n", len(fs))
+	fmt.Printf("Listed %d files on Yandex.Disk\n", len(fs))
 
 	// Check the same Drive folders the files are uploaded to, or the mod-time comparison below would never see them.
 	driveDirs := make([]string, len(dirs))
@@ -117,13 +117,13 @@ func syncFiles(ctx context.Context, fs []File, parallel int, toPath string, dstM
 	var newer int
 	seen := make(map[string]bool, len(fs))
 	for _, f := range fs {
-		if seen[f.Path] { // overlapping -dirs entries list a file twice
-			continue
-		}
-
-		seen[f.Path] = true
 		// dstModTimes are expected to have lowercased keys
 		dstPath := strings.ToLower(path.Join(toPath, f.Path))
+		if seen[dstPath] { // overlapping -dirs entries list a file twice
+			continue
+		}
+		seen[dstPath] = true
+
 		if modTime, ok := dstModTimes[dstPath]; ok {
 			// Allow some slack if file times are rounded by the destination when stored.
 			if modTime.After(f.ModTime.Add(-time.Second)) {
@@ -181,14 +181,14 @@ func syncFiles(ctx context.Context, fs []File, parallel int, toPath string, dstM
 	avgSpeed := totalMb / total.Seconds()
 	fmt.Printf("SUCCESS %d synced, %d already on %s (%.2f Mb in %s, %.2f Mb/s average)\n", totalSynced.Load(), newer, dstName, totalMb, total.Round(time.Millisecond), avgSpeed)
 	if n := totalErrors.Load(); n > 0 {
-		fmt.Printf("ERRORS %d. Try syncing again!\n", n)
+		log.Fatalf("ERRORS %d. Try syncing again!\n", n)
 	}
 	return nil
 }
 
 func main() {
 	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
+		fmt.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
 
 	action := flag.String("action", "list-all", "what to do: \"list-all\" lists every file, \"to-dropbox\" and \"to-gdrive\" upload the directories listed in -dirs to Dropbox or Google Drive respectively, skipping files that are newer there, \"gdrive-auth\" only runs the Google Drive authorization flow and stores the token")
@@ -210,9 +210,14 @@ func main() {
 
 	var dirs []string
 	if *dirsStr != "" {
-		dirs = strings.Split(*dirsStr, ",")
-		for i := range dirs {
-			dirs[i] = strings.TrimSpace(dirs[i])
+		dirStrSplit := strings.Split(*dirsStr, ",")
+		for _, dir := range dirStrSplit {
+			dir = strings.TrimSpace(dir)
+			// Skip the empty dirs if there is at least one comma
+			if len(dirStrSplit) > 1 && dir == "" {
+				continue
+			}
+			dirs = append(dirs, dir)
 		}
 	} else if *dirsFile != "" {
 		var err error
@@ -275,7 +280,7 @@ func main() {
 		if err := GDriveAuthorize(ctx, *gdriveClientFile, *gdriveTokenFile); err != nil {
 			log.Fatal(err)
 		}
-		log.Printf("Token stored in %s, you can now copy it to destination machine\n", *gdriveTokenFile)
+		fmt.Printf("Token stored in %s, you can now copy it to destination machine\n", *gdriveTokenFile)
 	case "gdrive-list":
 		c, err := NewGDriveClient(ctx, *gdriveClientFile, *gdriveTokenFile)
 		if err != nil {

@@ -73,7 +73,6 @@ func GDriveAuthorize(ctx context.Context, clientFile, tokenFile string) error {
 	if _, err := gdriveAuthorize(ctx, gdriveOAuthConfig(clientID, clientSecret), tokenFile); err != nil {
 		return err
 	}
-	fmt.Printf("Google Drive token stored in %s\n", tokenFile)
 	return nil
 }
 
@@ -211,10 +210,6 @@ func gdriveDo(ctx context.Context, what string, fn func() error) error {
 
 func (c *GDriveClient) UploadFile(ctx context.Context, reader func() (io.ReadCloser, error), f File, toPath string) error {
 	for attempt := 1; ; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
 		err := c.uploadOnce(ctx, reader, f, toPath)
 		if err == nil {
 			return nil
