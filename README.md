@@ -35,6 +35,12 @@ Upload only the files from the directories A and B:
 ./ya-to-dbx-sync -action to-dropbox -dirs A,B
 ```
 
+Upload only the files from the directories A and B to sub-folder:
+
+```sh
+./ya-to-dbx-sync -action to-dropbox -dirs A,B -to-path backup
+```
+
 ## License
 
 MIT

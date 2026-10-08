@@ -96,7 +96,7 @@ func DropboxListModTimes(ctx context.Context, dbx files.ContextClient, dirs []st
 		for {
 			for _, entry := range res.Entries {
 				if f, ok := entry.(*files.FileMetadata); ok {
-					modTimes[strings.TrimPrefix(f.PathLower, "/")] = time.Time(f.ClientModified)
+					modTimes[strings.ToLower(strings.TrimPrefix(f.PathLower, "/"))] = time.Time(f.ClientModified)
 				}
 			}
 			if !res.HasMore {
