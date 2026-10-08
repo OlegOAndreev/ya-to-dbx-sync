@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"math/rand/v2"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -101,14 +103,12 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, appKey, tok
 	}
 
 	var fs []File
-	for _, dir := range dirs {
-		err := ya.List(ctx, dir, parallel, func(f File) {
-			fs = append(fs, f)
-		})
-		if err != nil {
-			return err
-		}
+	if err := ya.List(ctx, dirs, parallel, func(f File) {
+		fs = append(fs, f)
+	}); err != nil {
+		return err
 	}
+	log.Printf("Listed %d files on Yandex.Disk\n", len(fs))
 
 	dbxModTimes, err := DropboxListModTimes(ctx, dbx, dirs)
 	if err != nil {
@@ -166,7 +166,7 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, appKey, tok
 			avgSpeed := totalMb / totalTime.Seconds()
 			remainingMb := float64(bytesToSync)/(1<<20) - totalMb
 			eta := time.Duration(remainingMb / avgSpeed * float64(time.Second))
-			fmt.Printf("SYNCED [%d/%d] ETA %s\t%s (%.1f Mb, %.1f Mb/s, total %v, avg %.1f Mb/s)\n",
+			fmt.Printf("SYNCED [%d/%d] ETA %15s\t%s (%.1f Mb, %.1f Mb/s, total %v, avg %.1f Mb/s)\n",
 				curSynced, len(toSync), eta.Round(time.Second), f.Path, mb, speed, totalTime.Round(time.Second), avgSpeed)
 
 			return nil
@@ -184,6 +184,10 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, appKey, tok
 }
 
 func main() {
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+
 	action := flag.String("action", "list-all", "what to do: \"list-all\" lists every file, \"list-top\" lists top-level directories, \"to-dropbox\" uploads the directories listed in -dirs to Dropbox, skipping files that are newer there")
 	dir := flag.String("path", "", "[for list-all and list-top] subdirectory to list; default is the whole disk")
 	dirsStr := flag.String("dirs", "", "[for to-dropbox] comma-separate list of Yandex Disk directories to upload, relative to the disk root")
@@ -225,14 +229,15 @@ func main() {
 	}
 	switch *action {
 	case "list-all":
+		startTime := time.Now()
 		n := 0
-		if err := c.List(ctx, *dir, *parallel, func(f File) {
+		if err := c.List(ctx, []string{*dir}, *parallel, func(f File) {
 			fmt.Printf("%12d  %s  %s\n", f.Size, f.ModTime.Format(time.RFC3339), f.Path)
 			n++
 		}); err != nil {
 			log.Fatal(err)
 		}
-		fmt.Println(n, "files")
+		fmt.Printf("%d files in %v\n", n, time.Since(startTime).Round(time.Second))
 	case "list-top":
 		err := c.ListDirs(ctx, *dir, 1, func(p string) { fmt.Println(p) })
 		if err != nil {

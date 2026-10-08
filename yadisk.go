@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -28,10 +30,15 @@ type YaDiskClient struct {
 }
 
 const (
-	yaAPIURL    = "https://cloud-api.yandex.net/v1/"
-	yaAuthURL   = "https://oauth.yandex.ru/authorize?response_type=token&client_id="
-	yaFields    = "_embedded.items.name,_embedded.items.type,_embedded.items.size,_embedded.items.modified"
-	yaPageLimit = 1000
+	// If true, list all disk and filter out the required files, if false -- do a recursive listing. Listing all
+	// elements in Yandex.Disk is almost always much faster than doing a subtree walk.
+	useListAll = true
+
+	yaAPIURL     = "https://cloud-api.yandex.net/v1/"
+	yaAuthURL    = "https://oauth.yandex.ru/authorize?response_type=token&client_id="
+	yaFields     = "_embedded.items.name,_embedded.items.type,_embedded.items.size,_embedded.items.modified"
+	yaFlatFields = "items.name,items.path,items.type,items.size,items.modified"
+	yaPageLimit  = 1000
 )
 
 func NewYaDiskClient(clientID, tokenFile string) (*YaDiskClient, error) {
@@ -39,10 +46,21 @@ func NewYaDiskClient(clientID, tokenFile string) (*YaDiskClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	cl := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 10 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
+	}
 	return &YaDiskClient{
 		baseURL: yaAPIURL,
 		token:   token,
-		hc:      http.DefaultClient,
+		hc:      cl,
 	}, nil
 }
 
@@ -131,11 +149,18 @@ type yaItem struct {
 	Type     string    `json:"type"`
 	Size     int64     `json:"size"`
 	Modified time.Time `json:"modified"`
+	Path     string    `json:"path"` // only filled by the flat files endpoint
 }
 
-func (c *YaDiskClient) List(ctx context.Context, dir string, parallel int, fn func(File)) error {
+func (c *YaDiskClient) List(ctx context.Context, dirs []string, parallel int, fn func(File)) error {
 	if parallel == 0 {
 		parallel = 1
+	}
+
+	if useListAll {
+		// The flat files endpoint lists the whole disk in one sequence, so no directory recursion is needed. It is much
+		// faster than directory recursion.
+		return c.listAllFiles(ctx, dirs, parallel, fn)
 	}
 
 	eg, egCtx := errgroup.WithContext(ctx)
@@ -164,11 +189,67 @@ func (c *YaDiskClient) List(ctx context.Context, dir string, parallel int, fn fu
 		})
 	}
 
-	if err := processDir(strings.Trim(dir, "/")); err != nil {
-		return err
+	for _, dir := range dirs {
+		eg.Go(func() error {
+			return processDir(strings.Trim(dir, "/"))
+		})
 	}
 
 	return eg.Wait()
+}
+
+func (c *YaDiskClient) listAllFiles(ctx context.Context, dirs []string, parallel int, fn func(File)) error {
+	var dirPrefixes []string
+	for _, dir := range dirs {
+		dir := strings.Trim(dir, "/")
+		if dir != "" {
+			dirPrefixes = append(dirPrefixes, dir+"/")
+		} else {
+			dirPrefixes = append(dirPrefixes, "")
+		}
+	}
+	// We list all files in parallel per page.
+	eg, egCtx := errgroup.WithContext(ctx)
+	var lastStartedOffset atomic.Int32
+	var fnMu sync.Mutex
+	for range parallel {
+		eg.Go(func() error {
+			// Try reading the next available page until it becomes empty.
+			for {
+				curOffset := lastStartedOffset.Add(yaPageLimit) - yaPageLimit
+				items, err := c.listAllPage(egCtx, int(curOffset), yaPageLimit)
+				if err != nil {
+					return err
+				}
+				if len(items) == 0 {
+					return nil
+				}
+				for _, it := range items {
+					if it.Type != "file" {
+						continue
+					}
+					path := strings.TrimPrefix(it.Path, "disk:/")
+
+					if hasOneOfPrefixes(path, dirPrefixes) {
+						fnMu.Lock()
+						fn(File{Path: path, Size: it.Size, ModTime: it.Modified})
+						fnMu.Unlock()
+					}
+				}
+			}
+		})
+	}
+
+	return eg.Wait()
+}
+
+func hasOneOfPrefixes(path string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *YaDiskClient) ListDirs(ctx context.Context, dir string, maxDepth int, fn func(string)) error {
@@ -256,6 +337,31 @@ func (c *YaDiskClient) downloadHref(ctx context.Context, file string) (string, e
 		return "", fmt.Errorf("disk:/%s: empty download href", file)
 	}
 	return r.Href, nil
+}
+
+func (c *YaDiskClient) listAllPage(ctx context.Context, offset, pageSize int) ([]yaItem, error) {
+	endOffset := offset + pageSize
+	var result []yaItem
+	// Additional check: try to return the whole page even if the API did not return it all at once.
+	for offset < endOffset {
+		q := url.Values{
+			"fields": {yaFlatFields},
+			"limit":  {strconv.Itoa(endOffset - offset)},
+			"offset": {strconv.Itoa(offset)},
+		}
+		var r struct {
+			Items []yaItem `json:"items"`
+		}
+		if err := c.getJSON(ctx, c.baseURL+"disk/resources/files?"+q.Encode(), fmt.Sprintf("disk:/files offset %d", offset), &r); err != nil {
+			return nil, err
+		}
+		if len(r.Items) == 0 {
+			break
+		}
+		result = append(result, r.Items...)
+		offset += len(r.Items)
+	}
+	return result, nil
 }
 
 func (c *YaDiskClient) listPage(ctx context.Context, dir string, offset int) ([]yaItem, error) {
