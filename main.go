@@ -153,6 +153,7 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, toPath, app
 	startTime := time.Now()
 	var totalSynced atomic.Int32
 	var totalSize atomic.Int64
+	var totalErrors atomic.Int64
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.SetLimit(parallel)
 	for _, f := range toSync {
@@ -160,7 +161,8 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, toPath, app
 			startFileTime := time.Now()
 			err := uploadFile(egCtx, ya, up, f, toPath)
 			if err != nil {
-				return err
+				fmt.Printf("FAILED %s\n", f.Path)
+				return nil
 			}
 
 			curSynced := totalSynced.Add(1)
@@ -187,6 +189,9 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, toPath, app
 	total := time.Since(startTime)
 	avgSpeed := totalMb / total.Seconds()
 	fmt.Printf("SUCCESS %d synced, %d already on Dropbox (%.2f Mb in %s, %.2f Mb/s average)\n", len(toSync), newer, totalMb, total.Round(time.Millisecond), avgSpeed)
+	if totalErrors.Load() > 0 {
+		fmt.Printf("ERRORS %d. Try syncing again!\n", totalErrors.Load())
+	}
 	return nil
 }
 
