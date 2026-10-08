@@ -242,7 +242,7 @@ func (c *YaDiskClient) Download(ctx context.Context, file string) (_ *os.File, e
 
 func (c *YaDiskClient) downloadTo(ctx context.Context, file string, tmp *os.File) error {
 	for attempt := 1; ; attempt++ {
-		href, err := c.downloadHref(ctx, file)
+		href, err := c.DownloadHref(ctx, file)
 		if err != nil {
 			if attempt >= maxAttempts {
 				return err
@@ -296,7 +296,7 @@ func (c *YaDiskClient) downloadOnce(ctx context.Context, href string, tmp *os.Fi
 	return false, nil
 }
 
-func (c *YaDiskClient) downloadHref(ctx context.Context, file string) (string, error) {
+func (c *YaDiskClient) DownloadHref(ctx context.Context, file string) (string, error) {
 	q := url.Values{"path": {"disk:/" + file}}
 	var r struct {
 		Href string `json:"href"`
