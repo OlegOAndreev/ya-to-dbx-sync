@@ -6,7 +6,7 @@ OAuth tokens and caches them locally.
 ## Build
 
 ```sh
-go build -o ya-to-dbx-sync .
+go build
 ```
 
 ## Usage
@@ -29,8 +29,12 @@ Upload all files:
 ./ya-to-dbx-sync -action to-dropbox
 ```
 
-Upload only the files from the directories listed in a file:
+Upload only the files from the directories A and B:
 
 ```sh
-./ya-to-dbx-sync -action to-dropbox -dirs-list to-sync.list
+./ya-to-dbx-sync -action to-dropbox -dirs A,B
 ```
+
+## License
+
+MIT

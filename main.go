@@ -34,9 +34,6 @@ type File struct {
 
 func readList(path string) ([]string, error) {
 	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -96,27 +93,10 @@ func uploadOnce(ctx context.Context, up *filetransfer.Uploader, tmp *os.File, f 
 	return err
 }
 
-func toDropbox(ctx context.Context, ya *YaDiskClient, dirsFile, appKey, tokenFile string, parallel int) error {
+func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, appKey, tokenFile string, parallel int) error {
 	dbx, err := dropboxClient(ctx, appKey, tokenFile)
 	if err != nil {
 		return err
-	}
-
-	var dirs []string
-	if dirsFile != "" {
-		dirs, err = readList(dirsFile)
-		if err != nil {
-			return err
-		}
-		if len(dirs) == 0 {
-			return fmt.Errorf("no directories listed in %s", dirsFile)
-		}
-	} else {
-		dirs = []string{""}
-	}
-
-	if parallel == 0 {
-		parallel = 1
 	}
 
 	var fs []File
@@ -174,8 +154,9 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirsFile, appKey, tokenFil
 			if err != nil {
 				return err
 			}
-			totalSize.Add(f.Size)
 
+			curSynced := totalSynced.Add(1)
+			totalSize.Add(f.Size)
 			mb := float64(f.Size) / (1 << 20)
 			fileTime := time.Since(startFileTime)
 			speed := mb / fileTime.Seconds()
@@ -184,9 +165,8 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirsFile, appKey, tokenFil
 			avgSpeed := totalMb / totalTime.Seconds()
 			remainingMb := float64(bytesToSync)/(1<<20) - totalMb
 			eta := time.Duration(remainingMb / avgSpeed * float64(time.Second))
-			curSynced := totalSynced.Add(1)
-			fmt.Printf("SYNCED [%d/%d] %s (%.1f Mb, %.1f Mb/s, total %v, avg %.1f Mb/s)\t\tETA %s\n",
-				curSynced, len(toSync), f.Path, mb, speed, totalTime.Round(time.Millisecond), avgSpeed, eta.Round(time.Second))
+			fmt.Printf("SYNCED [%d/%d] ETA %s\t%s (%.1f Mb, %.1f Mb/s, total %v, avg %.1f Mb/s)\n",
+				curSynced, len(toSync), eta.Round(time.Second), f.Path, mb, speed, totalTime.Round(time.Second), avgSpeed)
 
 			return nil
 		})
@@ -205,7 +185,8 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirsFile, appKey, tokenFil
 func main() {
 	action := flag.String("action", "list-all", "what to do: \"list-all\" lists every file, \"list-top\" lists top-level directories, \"to-dropbox\" uploads the directories listed in -dirs to Dropbox, skipping files that are newer there")
 	dir := flag.String("path", "", "[for list-all and list-top] subdirectory to list; default is the whole disk")
-	dirsFile := flag.String("dirs-list", "", "[for to-dropbox] file with the Yandex Disk directories to upload, one per line, relative to the disk root")
+	dirsStr := flag.String("dirs", "", "[for to-dropbox] comma-separate list of Yandex Disk directories to upload, relative to the disk root")
+	dirsFile := flag.String("dirs-file", "", "[for to-dropbox] file with the Yandex Disk directories to upload, one per line, relative to the disk root")
 	parallel := flag.Int("parallel", 10, "number of files to upload concurrently (used by to-dropbox)")
 	appKey := flag.String("dropbox-app-key", defaultDropboxAppKey, "Dropbox app key")
 	tokenFile := flag.String("token", "dropbox.token", "file caching the Dropbox OAuth token; a missing or empty file asks the user to authorize")
@@ -213,9 +194,27 @@ func main() {
 	yaTokenFile := flag.String("ya-oauth-token", "ya.token", "file caching the Yandex Disk OAuth token; a missing or empty file asks the user to authorize")
 	flag.Parse()
 
-	if *yaClientID == "" {
-		flag.Usage()
-		os.Exit(2)
+	if *parallel == 0 {
+		*parallel = 1
+	}
+
+	var dirs []string
+	if *dirsStr != "" {
+		dirs = strings.Split(*dirsStr, ",")
+		for i := range dirs {
+			dirs[i] = strings.TrimSpace(dirs[i])
+		}
+	} else if *dirsFile != "" {
+		var err error
+		dirs, err = readList(*dirsFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(dirs) == 0 {
+			log.Fatalf("No directories listed in %s", *dirsFile)
+		}
+	} else {
+		dirs = []string{""}
 	}
 
 	ctx := context.Background()
@@ -239,7 +238,7 @@ func main() {
 			log.Fatal(err)
 		}
 	case "to-dropbox":
-		err := toDropbox(ctx, c, *dirsFile, *appKey, *tokenFile, *parallel)
+		err := toDropbox(ctx, c, dirs, *appKey, *tokenFile, *parallel)
 		if err != nil {
 			log.Fatal(err)
 		}
