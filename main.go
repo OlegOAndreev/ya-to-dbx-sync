@@ -51,19 +51,12 @@ func readList(path string) ([]string, error) {
 }
 
 func uploadFile(ctx context.Context, c *YaDiskClient, up *filetransfer.Uploader, f File) error {
-	tmp, err := c.Download(ctx, f.Path)
-	if err != nil {
-		return err
-	}
-	defer tmp.Close()
-	defer os.Remove(tmp.Name())
-
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
-		err := uploadOnce(ctx, up, tmp, f)
+		err := uploadOnce(ctx, c, up, f)
 		if err == nil {
 			return nil
 		} else if attempt >= maxAttempts {
@@ -79,8 +72,14 @@ func uploadFile(ctx context.Context, c *YaDiskClient, up *filetransfer.Uploader,
 	}
 }
 
-func uploadOnce(ctx context.Context, up *filetransfer.Uploader, tmp *os.File, f File) error {
-	source, err := filetransfer.FileUpload(tmp.Name())
+func uploadOnce(ctx context.Context, c *YaDiskClient, up *filetransfer.Uploader, f File) error {
+	body, err := c.Download(ctx, f.Path)
+	if err != nil {
+		return err
+	}
+	defer body.Close()
+
+	source, err := filetransfer.ReaderUpload(body)
 	if err != nil {
 		return err
 	}
@@ -89,12 +88,14 @@ func uploadOnce(ctx context.Context, up *filetransfer.Uploader, tmp *os.File, f 
 	clientModified := dropbox.DBXTime(f.ModTime) // keeps the disk's timestamp, so later runs can compare ages
 	arg.ClientModified = &clientModified
 
-	_, err = up.Upload(ctx, source, arg, filetransfer.UploadOptions{MaxAttempts: 1})
+	// The SDK retries retryable failures of the current chunk from its in-memory
+	// buffer, so a transient Dropbox error doesn't restart the download.
+	_, err = up.Upload(ctx, source, arg, filetransfer.UploadOptions{MaxAttempts: maxAttempts})
 	return err
 }
 
 func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, appKey, tokenFile string, parallel int) error {
-	dbx, err := dropboxClient(ctx, appKey, tokenFile)
+	dbx, err := NewDropboxClient(ctx, appKey, tokenFile)
 	if err != nil {
 		return err
 	}
@@ -109,7 +110,7 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, appKey, tok
 		}
 	}
 
-	dbxModTimes, err := dropboxListModTimes(ctx, dbx, dirs)
+	dbxModTimes, err := DropboxListModTimes(ctx, dbx, dirs)
 	if err != nil {
 		return err
 	}

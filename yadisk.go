@@ -219,81 +219,29 @@ func (c *YaDiskClient) listDir(ctx context.Context, dir string, fn func(yaItem))
 	}
 }
 
-func (c *YaDiskClient) Download(ctx context.Context, file string) (_ *os.File, err error) {
-	tmp, err := os.CreateTemp("", "*")
+// Download returns the file contents as a stream; the caller must close it.
+// Retries live in the caller, which restarts the whole upload anyway.
+func (c *YaDiskClient) Download(ctx context.Context, file string) (io.ReadCloser, error) {
+	href, err := c.downloadHref(ctx, file)
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		if err != nil { // don't leave a partial download behind
-			tmp.Close()
-			os.Remove(tmp.Name())
-		}
-	}()
 
-	if err := c.downloadTo(ctx, file, tmp); err != nil {
-		return nil, err
-	}
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
-	return tmp, nil
-}
-
-func (c *YaDiskClient) downloadTo(ctx context.Context, file string, tmp *os.File) error {
-	for attempt := 1; ; attempt++ {
-		href, err := c.downloadHref(ctx, file)
-		if err != nil {
-			if attempt >= maxAttempts {
-				return err
-			}
-			continue
-		}
-
-		retryable, err := c.downloadOnce(ctx, href, tmp)
-		if err == nil {
-			return nil
-		}
-		if !retryable || attempt >= maxAttempts {
-			return fmt.Errorf("disk:/%s: %w", file, err)
-		}
-		fmt.Printf("DOWNLOAD RETRY %d/%d %s: %v\n", attempt, maxAttempts, file, err)
-		delay := time.Duration(1+rand.IntN(10)) * time.Second
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
-		}
-
-		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-			return err
-		}
-		if err := tmp.Truncate(0); err != nil {
-			return err
-		}
-	}
-}
-
-func (c *YaDiskClient) downloadOnce(ctx context.Context, href string, tmp *os.File) (again bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, href, nil)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "OAuth "+c.token)
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return true, err
+		return nil, fmt.Errorf("disk:/%s: %w", file, err)
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		status := fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(b)))
-		return retryableStatus(resp.StatusCode), status
+		return nil, fmt.Errorf("disk:/%s: %s: %s", file, resp.Status, strings.TrimSpace(string(b)))
 	}
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
-		return true, err
-	}
-	return false, nil
+	return resp.Body, nil
 }
 
 func (c *YaDiskClient) downloadHref(ctx context.Context, file string) (string, error) {
