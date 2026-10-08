@@ -97,11 +97,7 @@ func uploadOnce(ctx context.Context, c *YaDiskClient, up *filetransfer.Uploader,
 	return err
 }
 
-func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, toPath, appKey, tokenFile string, parallel int) error {
-	dbx, err := NewDropboxClient(ctx, appKey, tokenFile)
-	if err != nil {
-		return err
-	}
+func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, dirs []string, toPath string, parallel int) error {
 	toPath = strings.Trim(toPath, "/")
 
 	var fs []File
@@ -200,16 +196,18 @@ func main() {
 		log.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
 
-	action := flag.String("action", "list-all", "what to do: \"list-all\" lists every file, \"list-top\" lists top-level directories, \"to-dropbox\" uploads the directories listed in -dirs to Dropbox, skipping files that are newer there")
+	action := flag.String("action", "list-all", "what to do: \"list-all\" lists every file, \"list-top\" lists top-level directories, \"to-dropbox\" uploads the directories listed in -dirs to Dropbox, skipping files that are newer there, \"gdrive-auth\" only runs the Google Drive authorization flow and stores the token")
 	dir := flag.String("path", "", "[for list-all and list-top] subdirectory to list; default is the whole disk")
 	dirsStr := flag.String("dirs", "", "[for to-dropbox] comma-separate list of Yandex Disk directories to upload, relative to the disk root")
 	dirsFile := flag.String("dirs-file", "", "[for to-dropbox] file with the Yandex Disk directories to upload, one per line, relative to the disk root")
 	toPath := flag.String("to-path", "", "[for to-dropbox] Dropbox subfolder to upload into")
 	parallel := flag.Int("parallel", 10, "number of files to upload concurrently (used by to-dropbox)")
 	appKey := flag.String("dropbox-app-key", defaultDropboxAppKey, "Dropbox app key")
-	tokenFile := flag.String("token", "dropbox.token", "file caching the Dropbox OAuth token; a missing or empty file asks the user to authorize")
+	dbxTokenFile := flag.String("dropbox-token", "dropbox.token", "file caching the Dropbox OAuth token; a missing or empty file asks the user to authorize")
 	yaClientID := flag.String("ya-client-id", defaultYaClientId, "Yandex Disk app client ID")
 	yaTokenFile := flag.String("ya-oauth-token", "ya.token", "file caching the Yandex Disk OAuth token; a missing or empty file asks the user to authorize")
+	gdriveClientFile := flag.String("gdrive-client-file", "gdrive-client.json", "[for gdrive-auth] Google Drive OAuth client credentials file (the file that is saved from Auth Platform Clients page)")
+	gdriveTokenFile := flag.String("gdrive-token", "gdrive.token", "[for gdrive-auth] file to store the Google Drive OAuth token in")
 	flag.Parse()
 
 	if *parallel == 0 {
@@ -236,12 +234,14 @@ func main() {
 	}
 
 	ctx := context.Background()
-	c, err := NewYaDiskClient(*yaClientID, *yaTokenFile)
-	if err != nil {
-		log.Fatal(err)
-	}
+
 	switch *action {
 	case "list-all":
+		c, err := NewYaDiskClient(*yaClientID, *yaTokenFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
 		startTime := time.Now()
 		n := 0
 		if err := c.List(ctx, []string{*dir}, *parallel, func(f File) {
@@ -252,16 +252,33 @@ func main() {
 		}
 		fmt.Printf("%d files in %v\n", n, time.Since(startTime).Round(time.Second))
 	case "list-top":
-		err := c.ListDirs(ctx, *dir, 1, func(p string) { fmt.Println(p) })
+		c, err := NewYaDiskClient(*yaClientID, *yaTokenFile)
 		if err != nil {
+			log.Fatal(err)
+		}
+
+		if err := c.ListDirs(ctx, *dir, 1, func(p string) { fmt.Println(p) }); err != nil {
 			log.Fatal(err)
 		}
 	case "to-dropbox":
-		err := toDropbox(ctx, c, dirs, *toPath, *appKey, *tokenFile, *parallel)
+		c, err := NewYaDiskClient(*yaClientID, *yaTokenFile)
 		if err != nil {
 			log.Fatal(err)
 		}
+		dbx, err := NewDropboxClient(ctx, *appKey, *dbxTokenFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if err := toDropbox(ctx, c, dbx, dirs, *toPath, *parallel); err != nil {
+			log.Fatal(err)
+		}
+	case "gdrive-auth":
+		if err := GDriveAuthorize(ctx, *gdriveClientFile, *gdriveTokenFile); err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("Token stored in %s, you can now copy it to destination machine\n", *gdriveTokenFile)
 	default:
-		log.Fatalf("unknown action %q, want list-all, list-top or to-dropbox", *action)
+		log.Fatalf("unknown action %q, want list-all, list-top, to-dropbox or gdrive-auth", *action)
 	}
 }
