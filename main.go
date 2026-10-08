@@ -8,13 +8,13 @@ import (
 	"log"
 	"math/rand/v2"
 	"os"
-	"path"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/async"
+	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/files"
+	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/filetransfer"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -50,25 +50,26 @@ func readList(path string) ([]string, error) {
 	return lines, scanner.Err()
 }
 
-func uploadFile(ctx context.Context, c *YaDiskClient, dbx files.ContextClient, f File, dstPath string) error {
-	dst := path.Join(dstPath, f.Path)
+func uploadFile(ctx context.Context, c *YaDiskClient, up *filetransfer.Uploader, f File) error {
+	tmp, err := c.Download(ctx, f.Path)
+	if err != nil {
+		return err
+	}
+	defer tmp.Close()
+	defer os.Remove(tmp.Name())
+
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
-		href, err := c.DownloadHref(ctx, f.Path)
-		if err == nil {
-			err = saveURLOnce(ctx, dbx, dst, href)
-		}
+		err := uploadOnce(ctx, up, tmp, f)
 		if err == nil {
 			return nil
-		}
-		if attempt >= maxAttempts {
+		} else if attempt >= maxAttempts {
 			return err
 		}
-
-		fmt.Printf("COPY RETRY %d/%d %s: %v\n", attempt, maxAttempts, dst, err)
+		fmt.Printf("UPLOAD RETRY %d/%d %s: %v\n", attempt, maxAttempts, f.Path, err)
 		delay := time.Duration(1+rand.IntN(10)) * time.Second
 		select {
 		case <-ctx.Done():
@@ -78,50 +79,22 @@ func uploadFile(ctx context.Context, c *YaDiskClient, dbx files.ContextClient, f
 	}
 }
 
-func saveURLOnce(ctx context.Context, dbx files.ContextClient, path, href string) error {
-	res, err := dbx.SaveUrlContext(ctx, files.NewSaveUrlArg("/"+path, href))
+func uploadOnce(ctx context.Context, up *filetransfer.Uploader, tmp *os.File, f File) error {
+	source, err := filetransfer.FileUpload(tmp.Name())
 	if err != nil {
 		return err
 	}
-	if res.Tag == files.SaveUrlResultComplete {
-		return nil
-	}
+	arg := files.NewCommitInfo("/" + f.Path)
+	arg.Mode = &files.WriteMode{Tagged: dropbox.Tagged{Tag: files.WriteModeOverwrite}}
+	clientModified := dropbox.DBXTime(f.ModTime) // keeps the disk's timestamp, so later runs can compare ages
+	arg.ClientModified = &clientModified
 
-	const delay = time.Second
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
-		}
-
-		st, err := dbx.SaveUrlCheckJobStatusContext(ctx, async.NewPollArg(res.AsyncJobId))
-		if err != nil {
-			return err
-		}
-		switch st.Tag {
-		case files.SaveUrlJobStatusComplete:
-			return nil
-		case files.SaveUrlJobStatusFailed:
-			return saveURLError(path, st.Failed)
-		}
-	}
+	_, err = up.Upload(ctx, source, arg, filetransfer.UploadOptions{MaxAttempts: 1})
+	return err
 }
 
-func saveURLError(path string, e *files.SaveUrlError) error {
-	if e == nil {
-		return fmt.Errorf("%s: save_url failed", path)
-	}
-	if e.Tag == files.SaveUrlErrorPath && e.Path != nil {
-		return fmt.Errorf("%s: %s", path, e.Path.Tag)
-	}
-	return fmt.Errorf("%s: save_url failed: %s", path, e.Tag)
-}
-
-func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, dstPath, appKey, tokenFile string, parallel int) error {
-	dstPath = strings.Trim(dstPath, "/")
-
-	dbx, err := NewDropboxClient(ctx, appKey, tokenFile)
+func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, appKey, tokenFile string, parallel int) error {
+	dbx, err := dropboxClient(ctx, appKey, tokenFile)
 	if err != nil {
 		return err
 	}
@@ -136,12 +109,7 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, dstPath, ap
 		}
 	}
 
-	// Files land under dstPath on Dropbox, so look for their existing copies there.
-	dbxDirs := make([]string, len(dirs))
-	for i, dir := range dirs {
-		dbxDirs[i] = path.Join(dstPath, dir)
-	}
-	dbxModTimes, err := DropboxListModTimes(ctx, dbx, dbxDirs)
+	dbxModTimes, err := dropboxListModTimes(ctx, dbx, dirs)
 	if err != nil {
 		return err
 	}
@@ -156,7 +124,7 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, dstPath, ap
 		}
 
 		seen[f.Path] = true
-		if modTime, ok := dbxModTimes[strings.ToLower(path.Join(dstPath, f.Path))]; ok {
+		if modTime, ok := dbxModTimes[strings.ToLower(f.Path)]; ok {
 			// Allow some slack if file times are rounded by dropbox when stored.
 			if modTime.After(f.ModTime.Add(-time.Second)) {
 				fmt.Printf("SKIPPED %s (already on Dropbox)\n", f.Path)
@@ -172,6 +140,8 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, dstPath, ap
 		return nil // nothing to upload
 	}
 
+	up := filetransfer.NewUploader(dbx)
+
 	startTime := time.Now()
 	var totalSynced atomic.Int32
 	var totalSize atomic.Int64
@@ -180,7 +150,7 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dirs []string, dstPath, ap
 	for _, f := range toSync {
 		eg.Go(func() error {
 			startFileTime := time.Now()
-			err := uploadFile(egCtx, ya, dbx, f, dstPath)
+			err := uploadFile(egCtx, ya, up, f)
 			if err != nil {
 				return err
 			}
@@ -217,7 +187,6 @@ func main() {
 	dir := flag.String("path", "", "[for list-all and list-top] subdirectory to list; default is the whole disk")
 	dirsStr := flag.String("dirs", "", "[for to-dropbox] comma-separate list of Yandex Disk directories to upload, relative to the disk root")
 	dirsFile := flag.String("dirs-file", "", "[for to-dropbox] file with the Yandex Disk directories to upload, one per line, relative to the disk root")
-	dstPath := flag.String("dst-path", "", "[for to-dropbox] sub-folder of the Dropbox folder to upload into; prefixed with a trailing \"/\" to every destination path")
 	parallel := flag.Int("parallel", 10, "number of files to upload concurrently (used by to-dropbox)")
 	appKey := flag.String("dropbox-app-key", defaultDropboxAppKey, "Dropbox app key")
 	tokenFile := flag.String("token", "dropbox.token", "file caching the Dropbox OAuth token; a missing or empty file asks the user to authorize")
@@ -269,7 +238,7 @@ func main() {
 			log.Fatal(err)
 		}
 	case "to-dropbox":
-		err := toDropbox(ctx, c, dirs, *dstPath, *appKey, *tokenFile, *parallel)
+		err := toDropbox(ctx, c, dirs, *appKey, *tokenFile, *parallel)
 		if err != nil {
 			log.Fatal(err)
 		}

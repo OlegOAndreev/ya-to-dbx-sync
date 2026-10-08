@@ -17,7 +17,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-func NewDropboxClient(ctx context.Context, appKey, tokenFile string) (files.ContextClient, error) {
+func dropboxClient(ctx context.Context, appKey, tokenFile string) (files.ContextClient, error) {
 	token, err := dropboxLoadToken(tokenFile)
 	if err != nil {
 		return nil, err
@@ -80,7 +80,7 @@ func dropboxAuthorize(ctx context.Context, appKey, tokenFile string) (*oauth2.To
 	return token, nil
 }
 
-func DropboxListModTimes(ctx context.Context, dbx files.ContextClient, dirs []string) (map[string]time.Time, error) {
+func dropboxListModTimes(ctx context.Context, dbx files.ContextClient, dirs []string) (map[string]time.Time, error) {
 	modTimes := make(map[string]time.Time)
 	for _, dir := range dirs {
 		arg := files.NewListFolderArg("/" + strings.Trim(dir, "/"))
@@ -110,7 +110,7 @@ func DropboxListModTimes(ctx context.Context, dbx files.ContextClient, dirs []st
 	return modTimes, nil
 }
 
-func DropboxGetModTime(ctx context.Context, dbx files.ContextClient, path string) (time.Time, error) {
+func dropboxGetModTime(ctx context.Context, dbx files.ContextClient, path string) (time.Time, error) {
 	var zeroTime = time.Unix(0, 0)
 	res, err := dbx.GetMetadataContext(ctx, files.NewGetMetadataArg("/"+strings.Trim(path, "/")))
 	if err != nil {
