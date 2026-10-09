@@ -11,13 +11,16 @@ go build
 
 ## Google Drive Credentials
 
-The tool works out of the box with Yandex.Disk and Dropbox. Unfortunately, Google Drive requires the client to be
-verified in order to grant it permissions to your Drive.
+The tool works out of the box with Yandex.Disk and Dropbox when built from source. Unfortunately, Google Drive requires
+client credentials to be secret.
+
+Our release builds contain a client credentials builtin, but if you need to build the app from source, you need to pass
+your own client credentials.
 
 The easiest way to do this is to add a new client for yourselves by following instructions in
-https://developers.google.com/workspace/drive/api/quickstart/go. After you create your credentials,
-store them in the file gdrive-client.json and they will automatically be picked up by the tool (note that this you will
-still need to create the OAuth token, but it will be created for your newly created client).
+https://developers.google.com/workspace/drive/api/quickstart/go. After you create your credentials, store them in the
+file and pass -gdrive-client-file argument (note that this you will still need to create the OAuth token, but it will be
+created for your newly created client).
 
 Do not forget to add yourselves to the list of test users!
 

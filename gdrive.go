@@ -38,29 +38,42 @@ const (
 	gdriveChunkSize = 8 << 20
 )
 
+// This is linked in CI/CD pipeline
+var builtinGdriveClientFile string
+
 func gdriveOAuthConfig(clientID, clientSecret string) *oauth2.Config {
 	return &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
-		Scopes:       []string{drive.DriveScope},
+		Scopes:       []string{drive.DriveFileScope},
 		Endpoint:     google.Endpoint,
 	}
 }
 
 func parseClientFile(clientFile string) (string, string, error) {
-	f, err := os.Open(clientFile)
-	if err != nil {
-		return "", "", err
+	var contents []byte
+	if clientFile != "" {
+		var err error
+		contents, err = os.ReadFile(clientFile)
+		if err != nil {
+			return "", "", err
+		}
+	} else if builtinGdriveClientFile != "" {
+		contents = []byte(builtinGdriveClientFile)
+	} else {
+		return "", "", fmt.Errorf("neither -gdrive-client-file is passed, nor gdrive client credentials were set during build")
 	}
-	defer f.Close()
 	var r struct {
 		Installed struct {
 			ClientID     string `json:"client_id"`
 			ClientSecret string `json:"client_secret"`
 		} `json:"installed"`
 	}
-	if err := json.NewDecoder(f).Decode(&r); err != nil {
+	if err := json.Unmarshal(contents, &r); err != nil {
 		return "", "", err
+	}
+	if r.Installed.ClientID == "" || r.Installed.ClientSecret == "" {
+		return "", "", fmt.Errorf("no installed app client_id/client_secret in credentials")
 	}
 	return r.Installed.ClientID, r.Installed.ClientSecret, nil
 }

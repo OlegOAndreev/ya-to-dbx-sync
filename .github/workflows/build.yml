@@ -1,0 +1,61 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: windows-amd64
+            goos: windows
+            goarch: amd64
+          - name: macos-amd64
+            goos: darwin
+            goarch: amd64
+          - name: macos-arm64
+            goos: darwin
+            goarch: arm64
+          - name: linux-amd64
+            goos: linux
+            goarch: amd64
+          - name: linux-arm64
+            goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build and package
+        env:
+          GDRIVE_CLIENT_FILE: ${{ secrets.GDRIVE_CLIENT_FILE }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          ext=""
+          if [ "$GOOS" = windows ]; then ext=".exe"; fi
+
+          ldflags=""
+          if [ -n "$GDRIVE_CLIENT_FILE" ]; then
+            printf '%s' "$GDRIVE_CLIENT_FILE" > gdrive-client.json
+            # The single quotes keep spaces and newlines intact when go re-splits the -ldflags string.
+            ldflags="-X 'main.builtinGdriveClientFile=$(cat gdrive-client.json)'"
+          fi
+
+          CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "ya-to-dbx-sync$ext" .
+          zip "ya-to-dbx-sync-$NAME.zip" "ya-to-dbx-sync$ext"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ya-to-dbx-sync-${{ matrix.name }}
+          path: ya-to-dbx-sync-${{ matrix.name }}.zip
+          if-no-files-found: error

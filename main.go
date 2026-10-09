@@ -20,6 +20,7 @@ import (
 )
 
 const (
+	// Google is "special" and requires compiling the Client ID + secret during build time, see gdrive.go
 	defaultYaClientId    = "75e7915c8b34495599b6bea072347f86"
 	defaultDropboxAppKey = "aca15zhg3xn7dkg"
 
@@ -179,7 +180,7 @@ func syncFiles(ctx context.Context, fs []File, parallel int, toPath string, dstM
 	totalMb := float64(totalSize.Load()) / (1 << 20)
 	total := time.Since(startTime)
 	avgSpeed := totalMb / total.Seconds()
-	fmt.Printf("SUCCESS %d synced, %d already on %s (%.2f Mb in %s, %.2f Mb/s average)\n", totalSynced.Load(), newer, dstName, totalMb, total.Round(time.Millisecond), avgSpeed)
+	fmt.Printf("SUCCESS %d synced, %d already in destination (%.2f Mb in %s, %.2f Mb/s average)\n", totalSynced.Load(), newer, totalMb, total.Round(time.Millisecond), avgSpeed)
 	if n := totalErrors.Load(); n > 0 {
 		log.Fatalf("ERRORS %d. Try syncing again!\n", n)
 	}
@@ -200,7 +201,7 @@ func main() {
 	dbxTokenFile := flag.String("dropbox-token", "dropbox.token", "file caching the Dropbox OAuth token; a missing or empty file asks the user to authorize")
 	yaClientID := flag.String("ya-client-id", defaultYaClientId, "Yandex Disk app client ID")
 	yaTokenFile := flag.String("ya-oauth-token", "ya.token", "file caching the Yandex Disk OAuth token; a missing or empty file asks the user to authorize")
-	gdriveClientFile := flag.String("gdrive-client-file", "gdrive-client.json", "[for gdrive-auth, gdrive-list and to-drive] Google Drive OAuth client credentials file (the file that is saved from Auth Platform Clients page)")
+	gdriveClientFile := flag.String("gdrive-client-file", "", "[for gdrive-auth, gdrive-list and to-drive] Google Drive OAuth client credentials file (the file that is saved from Auth Platform Clients page)")
 	gdriveTokenFile := flag.String("gdrive-token", "gdrive.token", "[for gdrive-auth, gdrive-list and to-drive] file to store the Google Drive OAuth token in")
 	flag.Parse()
 
