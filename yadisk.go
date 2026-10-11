@@ -24,9 +24,11 @@ import (
 
 // YaDiskClient lists and downloads files on Yandex Disk over its REST API.
 type YaDiskClient struct {
-	baseURL string
-	token   string
-	hc      *http.Client
+	baseURL    string
+	token      string
+	timeout    time.Duration
+	hc         *http.Client
+	downloadHc *http.Client
 }
 
 const (
@@ -41,26 +43,27 @@ const (
 	yaPageLimit  = 1000
 )
 
-func NewYaDiskClient(clientID, tokenFile string) (*YaDiskClient, error) {
+func NewYaDiskClient(clientID, tokenFile string, timeout, downloadTimeout time.Duration) (*YaDiskClient, error) {
 	token, err := yaToken(clientID, tokenFile)
 	if err != nil {
 		return nil, err
 	}
-	cl := &http.Client{
+	downloadHc := &http.Client{
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 10 * time.Second,
+				Timeout: downloadTimeout,
 			}).DialContext,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
+			TLSHandshakeTimeout:   downloadTimeout,
+			ResponseHeaderTimeout: downloadTimeout,
 		},
 	}
 	return &YaDiskClient{
-		baseURL: yaAPIURL,
-		token:   token,
-		hc:      cl,
+		baseURL:    yaAPIURL,
+		token:      token,
+		timeout:    timeout,
+		hc:         &http.Client{},
+		downloadHc: downloadHc,
 	}, nil
 }
 
@@ -121,7 +124,7 @@ func (c *YaDiskClient) getJSON(ctx context.Context, u, what string, dst any) err
 }
 
 func (c *YaDiskClient) getJSONOnce(ctx context.Context, u string, dst any) (again bool, err error) {
-	ctx, cancel := context.WithTimeout(ctx, time.Second*10)
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -282,7 +285,7 @@ func (c *YaDiskClient) Download(ctx context.Context, file string) (io.ReadCloser
 		return nil, err
 	}
 	req.Header.Set("Authorization", "OAuth "+c.token)
-	resp, err := c.hc.Do(req)
+	resp, err := c.downloadHc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("disk:/%s: %w", file, err)
 	}

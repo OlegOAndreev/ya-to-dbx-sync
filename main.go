@@ -24,10 +24,8 @@ const (
 	defaultYaClientId    = "75e7915c8b34495599b6bea072347f86"
 	defaultDropboxAppKey = "aca15zhg3xn7dkg"
 
-	// maxAttempts is how many times a failed request or transfer is tried before giving up.
+	// maxAttempts is how many times a failed request is tried before giving up.
 	maxAttempts = 10
-	// uploadMaxAttempts is how many times a particular photo is tried to upload
-	uploadMaxAttempts = 2
 )
 
 type File struct {
@@ -54,7 +52,7 @@ func readList(path string) ([]string, error) {
 	return lines, scanner.Err()
 }
 
-func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, dirs []string, toPath string, parallel int) error {
+func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, dirs []string, toPath string, parallel int, uploadMaxAttempts int) error {
 	toPath = strings.Trim(toPath, "/")
 
 	fmt.Printf("Listing files on Yandex.Disk...\n")
@@ -82,11 +80,11 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, d
 	return syncFiles(ctx, fs, parallel, toPath, dbxModTimes, func(ctx context.Context, f File) error {
 		return DropboxUploadFile(ctx, dbx, func() (io.ReadCloser, error) {
 			return ya.Download(ctx, f.Path)
-		}, f, toPath)
+		}, f, toPath, uploadMaxAttempts)
 	})
 }
 
-func toDrive(ctx context.Context, ya *YaDiskClient, drv *GDriveClient, dirs []string, toPath string, parallel int) error {
+func toDrive(ctx context.Context, ya *YaDiskClient, drv *GDriveClient, dirs []string, toPath string, parallel int, uploadMaxAttempts int) error {
 	toPath = strings.Trim(toPath, "/")
 
 	fmt.Printf("Listing files on Yandex.Disk...\n")
@@ -114,7 +112,7 @@ func toDrive(ctx context.Context, ya *YaDiskClient, drv *GDriveClient, dirs []st
 	return syncFiles(ctx, fs, parallel, toPath, driveModTimes, func(ctx context.Context, f File) error {
 		return drv.UploadFile(ctx, func() (io.ReadCloser, error) {
 			return ya.Download(ctx, f.Path)
-		}, f, toPath)
+		}, f, toPath, uploadMaxAttempts)
 	})
 }
 
@@ -203,10 +201,13 @@ func main() {
 	dirsFile := flag.String("dirs-file", "", "[for to-dropbox, to-drive and gdrive-list] file with the directories to process, one per line, relative to the remote root")
 	toPath := flag.String("to-path", "", "[for to-dropbox and to-drive] Dropbox/Google Drive subfolder to upload into")
 	parallel := flag.Int("parallel", 10, "number of files to upload concurrently (used by to-dropbox and to-drive)")
+	uploadMaxAttempts := flag.Int("upload-attempts", 2, "[for to-dropbox and to-drive] number of times the upload is attempted before giving up")
 	appKey := flag.String("dropbox-app-key", defaultDropboxAppKey, "Dropbox app key")
 	dbxTokenFile := flag.String("dropbox-token", "dropbox.token", "file caching the Dropbox OAuth token; a missing or empty file asks the user to authorize")
 	yaClientID := flag.String("ya-client-id", defaultYaClientId, "Yandex Disk app client ID")
 	yaTokenFile := flag.String("ya-oauth-token", "ya.token", "file caching the Yandex Disk OAuth token; a missing or empty file asks the user to authorize")
+	yaTimeout := flag.Duration("ya-timeout", time.Second*15, "timeout for metadata requests for Yandex Disk")
+	yaDownloadTimeout := flag.Duration("ya-download-timeout", time.Second*5, "timeout for read requests for Yandex Disk")
 	gdriveClientFile := flag.String("gdrive-client-file", "", "[for gdrive-auth, gdrive-list and to-drive] Google Drive OAuth client credentials file (the file that is saved from Auth Platform Clients page)")
 	gdriveTokenFile := flag.String("gdrive-token", "gdrive.token", "[for gdrive-auth, gdrive-list and to-drive] file to store the Google Drive OAuth token in")
 	flag.Parse()
@@ -243,7 +244,7 @@ func main() {
 
 	switch *action {
 	case "list-all":
-		c, err := NewYaDiskClient(*yaClientID, *yaTokenFile)
+		c, err := NewYaDiskClient(*yaClientID, *yaTokenFile, *yaTimeout, *yaDownloadTimeout)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -258,7 +259,7 @@ func main() {
 		}
 		fmt.Printf("%d files in %v\n", n, time.Since(startTime).Round(time.Second))
 	case "to-dropbox":
-		c, err := NewYaDiskClient(*yaClientID, *yaTokenFile)
+		c, err := NewYaDiskClient(*yaClientID, *yaTokenFile, *yaTimeout, *yaDownloadTimeout)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -267,11 +268,11 @@ func main() {
 			log.Fatal(err)
 		}
 
-		if err := toDropbox(ctx, c, dbx, dirs, *toPath, *parallel); err != nil {
+		if err := toDropbox(ctx, c, dbx, dirs, *toPath, *parallel, *uploadMaxAttempts); err != nil {
 			log.Fatal(err)
 		}
 	case "to-gdrive":
-		c, err := NewYaDiskClient(*yaClientID, *yaTokenFile)
+		c, err := NewYaDiskClient(*yaClientID, *yaTokenFile, *yaTimeout, *yaDownloadTimeout)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -280,7 +281,7 @@ func main() {
 			log.Fatal(err)
 		}
 
-		if err := toDrive(ctx, c, drv, dirs, *toPath, *parallel); err != nil {
+		if err := toDrive(ctx, c, drv, dirs, *toPath, *parallel, *uploadMaxAttempts); err != nil {
 			log.Fatal(err)
 		}
 	case "gdrive-auth":

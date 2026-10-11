@@ -221,7 +221,7 @@ func gdriveDo(ctx context.Context, what string, fn func() error) error {
 	}
 }
 
-func (c *GDriveClient) UploadFile(ctx context.Context, reader func() (io.ReadCloser, error), f File, toPath string) error {
+func (c *GDriveClient) UploadFile(ctx context.Context, reader func() (io.ReadCloser, error), f File, toPath string, uploadMaxAttempts int) error {
 	for attempt := 1; ; attempt++ {
 		err := c.uploadOnce(ctx, reader, f, toPath)
 		if err == nil {

@@ -117,7 +117,7 @@ func DropboxList(ctx context.Context, dbx files.ContextClient, dirs []string, fn
 	return nil
 }
 
-func DropboxUploadFile(ctx context.Context, dbx files.ContextClient, open func() (io.ReadCloser, error), f File, toPath string) error {
+func DropboxUploadFile(ctx context.Context, dbx files.ContextClient, open func() (io.ReadCloser, error), f File, toPath string, uploadMaxAttempts int) error {
 	up := filetransfer.NewUploader(dbx)
 	for attempt := 1; ; attempt++ {
 		err := uploadOnce(ctx, up, open, f, toPath)
