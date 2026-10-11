@@ -123,10 +123,10 @@ func DropboxUploadFile(ctx context.Context, dbx files.ContextClient, open func()
 		err := uploadOnce(ctx, up, open, f, toPath)
 		if err == nil {
 			return nil
-		} else if attempt >= maxAttempts {
+		} else if attempt >= uploadMaxAttempts {
 			return err
 		}
-		fmt.Printf("UPLOAD RETRY %d/%d %s: %v\n", attempt, maxAttempts, f.Path, err)
+		fmt.Printf("UPLOAD RETRY %d/%d %s: %v\n", attempt, uploadMaxAttempts, f.Path, err)
 		delay := time.Duration(1+rand.IntN(10)) * time.Second
 		select {
 		case <-ctx.Done():

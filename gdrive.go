@@ -226,10 +226,10 @@ func (c *GDriveClient) UploadFile(ctx context.Context, reader func() (io.ReadClo
 		err := c.uploadOnce(ctx, reader, f, toPath)
 		if err == nil {
 			return nil
-		} else if attempt >= maxAttempts {
+		} else if attempt >= uploadMaxAttempts {
 			return err
 		}
-		fmt.Printf("UPLOAD RETRY %d/%d %s: %v\n", attempt, maxAttempts, f.Path, err)
+		fmt.Printf("UPLOAD RETRY %d/%d %s: %v\n", attempt, uploadMaxAttempts, f.Path, err)
 		delay := time.Duration(1+rand.IntN(10)) * time.Second
 		select {
 		case <-ctx.Done():

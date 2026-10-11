@@ -26,6 +26,8 @@ const (
 
 	// maxAttempts is how many times a failed request or transfer is tried before giving up.
 	maxAttempts = 10
+	// uploadMaxAttempts is how many times a particular photo is tried to upload
+	uploadMaxAttempts = 2
 )
 
 type File struct {

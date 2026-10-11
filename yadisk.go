@@ -54,7 +54,7 @@ func NewYaDiskClient(clientID, tokenFile string) (*YaDiskClient, error) {
 				KeepAlive: 10 * time.Second,
 			}).DialContext,
 			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 30 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second,
 		},
 	}
 	return &YaDiskClient{
