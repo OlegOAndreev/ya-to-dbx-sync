@@ -55,6 +55,7 @@ func readList(path string) ([]string, error) {
 func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, dirs []string, toPath string, parallel int) error {
 	toPath = strings.Trim(toPath, "/")
 
+	fmt.Printf("Listing files on Yandex.Disk...\n")
 	var fs []File
 	if err := ya.List(ctx, dirs, parallel, func(f File) {
 		fs = append(fs, f)
@@ -63,6 +64,7 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, d
 	}
 	fmt.Printf("Listed %d files on Yandex.Disk\n", len(fs))
 
+	fmt.Printf("Listing files on Dropbox...\n")
 	// Check the same Dropbox subfolder the files are uploaded to, or the mod-time comparison below would never see them.
 	dbxDirs := make([]string, len(dirs))
 	for i, d := range dirs {
