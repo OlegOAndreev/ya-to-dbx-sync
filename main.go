@@ -89,6 +89,7 @@ func toDropbox(ctx context.Context, ya *YaDiskClient, dbx files.ContextClient, d
 func toDrive(ctx context.Context, ya *YaDiskClient, drv *GDriveClient, dirs []string, toPath string, parallel int) error {
 	toPath = strings.Trim(toPath, "/")
 
+	fmt.Printf("Listing files on Yandex.Disk...\n")
 	var fs []File
 	if err := ya.List(ctx, dirs, parallel, func(f File) {
 		fs = append(fs, f)
@@ -97,6 +98,7 @@ func toDrive(ctx context.Context, ya *YaDiskClient, drv *GDriveClient, dirs []st
 	}
 	fmt.Printf("Listed %d files on Yandex.Disk\n", len(fs))
 
+	fmt.Printf("Listing files on Google Drive...\n")
 	// Check the same Drive folders the files are uploaded to, or the mod-time comparison below would never see them.
 	driveDirs := make([]string, len(dirs))
 	for i, d := range dirs {
