@@ -171,8 +171,8 @@ func syncFiles(ctx context.Context, fs []File, parallel int, toPath string, dstM
 			avgSpeed := totalMb / totalTime.Seconds()
 			remainingMb := float64(bytesToSync)/(1<<20) - totalMb
 			eta := time.Duration(remainingMb / avgSpeed * float64(time.Second))
-			fmt.Printf("SYNCED [%d/%d] ETA %15s\t%s (%.1f Mb, %.1f Mb/s, total %v, avg %.1f Mb/s)\n",
-				curSynced, len(toSync), eta.Round(time.Second), f.Path, mb, speed, totalTime.Round(time.Second), avgSpeed)
+			fmt.Printf("SYNCED [%d/%d] ETA %15s\t%s (%.1f Mb, %.1f Mb/s, total %v, avg %.1f Mb/s, total errors %d)\n",
+				curSynced, len(toSync), eta.Round(time.Second), f.Path, mb, speed, totalTime.Round(time.Second), avgSpeed, totalErrors.Load())
 
 			return nil
 		})
