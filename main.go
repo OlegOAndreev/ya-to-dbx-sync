@@ -196,11 +196,15 @@ func main() {
 		fmt.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
 
-	action := flag.String("action", "list-all", "what to do: \"list-all\" lists every file, \"to-dropbox\" and \"to-gdrive\" upload the directories listed in -dirs to Dropbox or Google Drive respectively, skipping files that are newer there, \"gdrive-auth\" only runs the Google Drive authorization flow and stores the token")
-	dirsStr := flag.String("dirs", "", "[for to-dropbox, to-drive and gdrive-list] comma-separated list of directories to process, relative to the remote root")
-	dirsFile := flag.String("dirs-file", "", "[for to-dropbox, to-drive and gdrive-list] file with the directories to process, one per line, relative to the remote root")
+	action := flag.String("action", "list", "what to do: \"list\" lists files in Yandex Disk,"+
+		"\"to-dropbox\" and \"to-gdrive\" upload the directories listed in -dirs to Dropbox or Google Drive respectively, skipping files that are newer there, "+
+		"\"gdrive-auth\" only runs the Google Drive authorization flow and stores the token, "+
+		"\"dropbox-list\" lists files in Dropbox, \"gdrive-list\" lists files in Google Drive, "+
+		"\"dropbox-delete-invalid\" removes invalid JPEGs from the Dropbox")
+	dirsStr := flag.String("dirs", "", "[for to-dropbox, to-drive, gdrive-list, dropbox-list, dropbox-delete-invalid] comma-separated list of directories to process, relative to the remote root")
+	dirsFile := flag.String("dirs-file", "", "[for to-dropbox, to-drive, gdrive-list, dropbox-list, dropbox-delete-invalid] file with the directories to process, one per line, relative to the remote root")
 	toPath := flag.String("to-path", "", "[for to-dropbox and to-drive] Dropbox/Google Drive subfolder to upload into")
-	parallel := flag.Int("parallel", 10, "number of files to upload concurrently (used by to-dropbox and to-drive)")
+	parallel := flag.Int("parallel", 10, "number of files to process concurrently (used by to-dropbox, to-drive and dropbox-delete-invalid)")
 	uploadMaxAttempts := flag.Int("upload-attempts", 2, "[for to-dropbox and to-drive] number of times the upload is attempted before giving up")
 	appKey := flag.String("dropbox-app-key", defaultDropboxAppKey, "Dropbox app key")
 	dbxTokenFile := flag.String("dropbox-token", "dropbox.token", "file caching the Dropbox OAuth token; a missing or empty file asks the user to authorize")
@@ -243,7 +247,7 @@ func main() {
 	ctx := context.Background()
 
 	switch *action {
-	case "list-all":
+	case "list":
 		c, err := NewYaDiskClient(*yaClientID, *yaTokenFile, *yaTimeout, *yaDownloadTimeout)
 		if err != nil {
 			log.Fatal(err)
@@ -269,6 +273,30 @@ func main() {
 		}
 
 		if err := toDropbox(ctx, c, dbx, dirs, *toPath, *parallel, *uploadMaxAttempts); err != nil {
+			log.Fatal(err)
+		}
+	case "dropbox-list":
+		dbx, err := NewDropboxClient(ctx, *appKey, *dbxTokenFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		startTime := time.Now()
+		n := 0
+		if err := DropboxList(ctx, dbx, dirs, func(f File) {
+			fmt.Printf("%12d  %s  %s\n", f.Size, f.ModTime.Format(time.RFC3339), f.Path)
+			n++
+		}); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("%d files in %v\n", n, time.Since(startTime).Round(time.Second))
+	case "dropbox-delete-invalid":
+		dbx, err := NewDropboxClient(ctx, *appKey, *dbxTokenFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if err := DropboxDeleteInvalid(ctx, dbx, dirs, *parallel); err != nil {
 			log.Fatal(err)
 		}
 	case "to-gdrive":
@@ -305,6 +333,6 @@ func main() {
 		}
 		fmt.Printf("%d files in %v\n", n, time.Since(startTime).Round(time.Second))
 	default:
-		log.Fatalf("unknown action %q, want list-all, to-dropbox, to-gdrive, gdrive-auth", *action)
+		log.Fatalf("unknown action %q, want list, to-dropbox, dropbox-list, dropbox-delete-invalid, to-gdrive, gdrive-auth, gdrive-list", *action)
 	}
 }

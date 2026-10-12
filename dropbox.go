@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/rand/v2"
 	"os"
 	"path"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox"
@@ -19,6 +21,7 @@ import (
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/oauth"
 	"github.com/dropbox/dropbox-sdk-go-unofficial/v6/dropbox/retry"
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/errgroup"
 )
 
 func NewDropboxClient(ctx context.Context, appKey, tokenFile string) (files.ContextClient, error) {
@@ -117,6 +120,20 @@ func DropboxList(ctx context.Context, dbx files.ContextClient, dirs []string, fn
 	return nil
 }
 
+func DropboxDownloadFile(ctx context.Context, dbx files.ContextClient, path string) ([]byte, error) {
+	_, content, err := dbx.DownloadContext(ctx, files.NewDownloadArg("/"+strings.Trim(path, "/")))
+	if err != nil {
+		return nil, err
+	}
+	defer content.Close()
+	return io.ReadAll(content)
+}
+
+func DropboxDeleteFile(ctx context.Context, dbx files.ContextClient, path string) error {
+	_, err := dbx.DeleteV2Context(ctx, files.NewDeleteArg("/"+strings.Trim(path, "/")))
+	return err
+}
+
 func DropboxUploadFile(ctx context.Context, dbx files.ContextClient, open func() (io.ReadCloser, error), f File, toPath string, uploadMaxAttempts int) error {
 	up := filetransfer.NewUploader(dbx)
 	for attempt := 1; ; attempt++ {
@@ -171,4 +188,57 @@ func DropboxGetModTime(ctx context.Context, dbx files.ContextClient, path string
 		return time.Time(metadata.ClientModified), nil
 	}
 	return zeroTime, nil
+}
+
+func DropboxDeleteInvalid(ctx context.Context, dbx files.ContextClient, dirs []string, parallel int) error {
+	fmt.Printf("Listing files on Dropbox...\n")
+	var jpegs []File
+	if err := DropboxList(ctx, dbx, dirs, func(f File) {
+		if isJpegPath(f.Path) {
+			jpegs = append(jpegs, f)
+		}
+	}); err != nil {
+		return err
+	}
+	fmt.Printf("Listed %d JPEGs on Dropbox\n", len(jpegs))
+
+	startTime := time.Now()
+	var checked, valid, deleted atomic.Int32
+	var totalErrors atomic.Int64
+	eg, egCtx := errgroup.WithContext(ctx)
+	eg.SetLimit(parallel)
+	for _, f := range jpegs {
+		eg.Go(func() error {
+			n := checked.Add(1)
+			contents, err := DropboxDownloadFile(egCtx, dbx, f.Path)
+			if err != nil {
+				// Don't delete on download errors, so that a transient failure doesn't lose the file.
+				fmt.Printf("FAILED to download %s: %v\n", f.Path, err)
+				totalErrors.Add(1)
+				return nil
+			}
+			if IsValidJpeg(contents) {
+				valid.Add(1)
+				fmt.Printf("VALID [%d/%d] %s\n", n, len(jpegs), f.Path)
+				return nil
+			}
+			if err := DropboxDeleteFile(egCtx, dbx, f.Path); err != nil {
+				fmt.Printf("FAILED to delete %s: %v\n", f.Path, err)
+				totalErrors.Add(1)
+				return nil
+			}
+			deleted.Add(1)
+			fmt.Printf("DELETED [%d/%d] %s (invalid JPEG)\n", n, len(jpegs), f.Path)
+			return nil
+		})
+	}
+
+	if err := eg.Wait(); err != nil {
+		return err
+	}
+	fmt.Printf("SUCCESS %d valid, %d invalid deleted (in %v)\n", valid.Load(), deleted.Load(), time.Since(startTime).Round(time.Second))
+	if n := totalErrors.Load(); n > 0 {
+		log.Fatalf("ERRORS %d. Try running again!\n", n)
+	}
+	return nil
 }
