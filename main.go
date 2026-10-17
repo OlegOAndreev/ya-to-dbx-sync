@@ -196,16 +196,18 @@ func main() {
 		fmt.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
 
-	action := flag.String("action", "list", "what to do: \"list\" lists files in Yandex Disk,"+
+	action := flag.String("action", "list", "what to do: \"list\" lists files in Yandex Disk, "+
 		"\"to-dropbox\" and \"to-gdrive\" upload the directories listed in -dirs to Dropbox or Google Drive respectively, skipping files that are newer there, "+
+		"\"local-to-dropbox\" uploads the local directories listed in -dirs to Dropbox, respecting -skip and .gitignore, "+
 		"\"gdrive-auth\" only runs the Google Drive authorization flow and stores the token, "+
 		"\"dropbox-list\" lists files in Dropbox, \"gdrive-list\" lists files in Google Drive, "+
 		"\"dropbox-delete-invalid\" removes invalid JPEGs from the Dropbox")
-	dirsStr := flag.String("dirs", "", "[for to-dropbox, to-drive, gdrive-list, dropbox-list, dropbox-delete-invalid] comma-separated list of directories to process, relative to the remote root")
-	dirsFile := flag.String("dirs-file", "", "[for to-dropbox, to-drive, gdrive-list, dropbox-list, dropbox-delete-invalid] file with the directories to process, one per line, relative to the remote root")
-	toPath := flag.String("to-path", "", "[for to-dropbox and to-drive] Dropbox/Google Drive subfolder to upload into")
-	parallel := flag.Int("parallel", 10, "number of files to process concurrently (used by to-dropbox, to-drive and dropbox-delete-invalid)")
-	uploadMaxAttempts := flag.Int("upload-attempts", 2, "[for to-dropbox and to-drive] number of times the upload is attempted before giving up")
+	dirsStr := flag.String("dirs", "", "comma-separated list of directories to process: for to-dropbox, to-drive, gdrive-list, dropbox-list and dropbox-delete-invalid they are relative to the remote root; for local-to-dropbox they are local paths, relative or absolute")
+	dirsFile := flag.String("dirs-file", "", "file with the directories to process, one per line; the same path rules as -dirs apply")
+	skip := flag.String("skip", ".git,.DS_Store", "[for local-to-dropbox] comma-separated names or glob patterns of files and directories to skip, in addition to the .gitignore rules")
+	toPath := flag.String("to-path", "", "[for to-dropbox, to-gdrive and local-to-dropbox] Dropbox/Google Drive subfolder to upload into")
+	parallel := flag.Int("parallel", 10, "number of files to process concurrently (used by to-dropbox, to-gdrive, local-to-dropbox and dropbox-delete-invalid)")
+	uploadMaxAttempts := flag.Int("upload-attempts", 2, "[for to-dropbox, to-gdrive and local-to-dropbox] number of times the upload is attempted before giving up")
 	appKey := flag.String("dropbox-app-key", defaultDropboxAppKey, "Dropbox app key")
 	dbxTokenFile := flag.String("dropbox-token", "dropbox.token", "file caching the Dropbox OAuth token; a missing or empty file asks the user to authorize")
 	yaClientID := flag.String("ya-client-id", defaultYaClientId, "Yandex Disk app client ID")
@@ -244,6 +246,13 @@ func main() {
 		dirs = []string{""}
 	}
 
+	var skipPatterns []string
+	for s := range strings.SplitSeq(*skip, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			skipPatterns = append(skipPatterns, s)
+		}
+	}
+
 	ctx := context.Background()
 
 	switch *action {
@@ -273,6 +282,15 @@ func main() {
 		}
 
 		if err := toDropbox(ctx, c, dbx, dirs, *toPath, *parallel, *uploadMaxAttempts); err != nil {
+			log.Fatal(err)
+		}
+	case "local-to-dropbox":
+		dbx, err := NewDropboxClient(ctx, *appKey, *dbxTokenFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if err := toDropboxLocal(ctx, dbx, dirs, skipPatterns, *toPath, *parallel, *uploadMaxAttempts); err != nil {
 			log.Fatal(err)
 		}
 	case "dropbox-list":
@@ -333,6 +351,6 @@ func main() {
 		}
 		fmt.Printf("%d files in %v\n", n, time.Since(startTime).Round(time.Second))
 	default:
-		log.Fatalf("unknown action %q, want list, to-dropbox, dropbox-list, dropbox-delete-invalid, to-gdrive, gdrive-auth, gdrive-list", *action)
+		log.Fatalf("unknown action %q, want list, to-dropbox, local-to-dropbox, dropbox-list, dropbox-delete-invalid, to-gdrive, gdrive-auth, gdrive-list", *action)
 	}
 }

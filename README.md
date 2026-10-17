@@ -62,6 +62,20 @@ Upload all files to Google Drive (same flags as `to-dropbox`):
 ./ya-to-dbx-sync -action to-drive
 ```
 
+Upload local directories to Dropbox. `-dirs` accepts relative or absolute local paths; each directory is uploaded
+under its own base name (`/home/me/photos` becomes `backup/photos` on Dropbox). `.gitignore` files are honored while walking
+the tree, and `.git` is skipped by default:
+
+```sh
+./ya-to-dbx-sync -action local-to-dropbox -dirs ~/Documents,../photos -to-path backup
+```
+
+Skip additional files and directories by name or glob (`-skip` is comma-separated and defaults to `.git`):
+
+```sh
+./ya-to-dbx-sync -action local-to-dropbox -dirs . -skip .git,node_modules,*.tmp
+```
+
 Authorize Google Drive and store the OAuth token locally (in `gdrive.token` by default), doing nothing else:
 
 ```sh

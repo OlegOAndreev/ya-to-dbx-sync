@@ -8,6 +8,7 @@ require (
 )
 
 require (
+	github.com/codeglyph/go-dotignore/v2 v2.3.0
 	golang.org/x/sync v0.23.0
 	google.golang.org/api v0.301.0
 )

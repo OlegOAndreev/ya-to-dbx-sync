@@ -6,6 +6,8 @@ cloud.google.com/go/compute/metadata v0.10.0 h1:pyKMUQSwchgkIBBJGdILqQbs/BNJXqwS
 cloud.google.com/go/compute/metadata v0.10.0/go.mod h1:rGFHRrIif570kSibjFTMbt6/4/tzgJWFGI/HVol4GIk=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
+github.com/codeglyph/go-dotignore/v2 v2.3.0 h1:bI7VVTvlb6gtEghlYheuKcf9qscom8grOhUz/3OMG5Q=
+github.com/codeglyph/go-dotignore/v2 v2.3.0/go.mod h1:cAH4uxaZ0Rsl33QT2c++wAnk7C8J2c8pik9U4H0+F9w=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dropbox/dropbox-sdk-go-unofficial/v6 v6.6.2 h1:zRpx93GLA2IYx4z2NTW6uTJgQ2f0CJ93xIj+w6Aoy3U=
