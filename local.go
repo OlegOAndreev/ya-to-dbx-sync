@@ -87,6 +87,8 @@ func cleanDirs(dirs []string) ([]string, error) {
 	baseSet := make(map[string]string)
 	var result []string
 	for _, dir := range dirs {
+		dir := expandUser(dir)
+
 		abs, err := filepath.Abs(dir)
 		if err != nil {
 			return nil, err
@@ -104,6 +106,23 @@ func cleanDirs(dirs []string) ([]string, error) {
 		result = append(result, abs)
 	}
 	return result, nil
+}
+
+// If we pass multiple arguments to -dirs, e.g. "-dirs ~/some-dir,~/other-dir", the shell does not expand the user
+// directory. Do it ourselves.
+func expandUser(dir string) string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return dir
+	}
+
+	if dir == "~" {
+		return homeDir
+	}
+	if after, found := strings.CutPrefix(dir, "~/"); found {
+		return path.Join(homeDir, after)
+	}
+	return dir
 }
 
 func walkLocal(roots []string, skip []string, fn func(localFile)) error {
