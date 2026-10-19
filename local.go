@@ -169,11 +169,16 @@ func walkLocalRoot(root string, skipMatcher *dotignore.PatternMatcher, fn func(l
 			if err != nil {
 				return err
 			}
+			modTime := info.ModTime()
+			// Stupid hack for files with incorrect modtime: assume they do not have one.
+			if info.ModTime().After(time.Now().Add(time.Hour * 24)) {
+				modTime = time.Unix(0, 0)
+			}
 			fn(localFile{
 				File: File{
 					Path:    filepath.ToSlash(filepath.Join(remoteBase, relPath)),
 					Size:    info.Size(),
-					ModTime: info.ModTime(),
+					ModTime: modTime,
 				},
 				LocalPath: path,
 			})

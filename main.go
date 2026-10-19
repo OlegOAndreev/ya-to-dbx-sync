@@ -135,6 +135,8 @@ func syncFiles(ctx context.Context, fs []File, parallel int, toPath string, dstM
 				fmt.Printf("SKIPPED %s (already in destination)\n", f.Path)
 				newer++
 				continue
+			} else {
+				fmt.Printf("File %s is older in remote than locally: %v vs %v\n", f.Path, modTime, f.ModTime)
 			}
 		}
 		toSync = append(toSync, f)
